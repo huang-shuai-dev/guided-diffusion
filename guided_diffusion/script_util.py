@@ -1,5 +1,6 @@
 import argparse
 import inspect
+import math
 
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
@@ -146,16 +147,34 @@ def create_model(
     use_new_attention_order=False,
 ):
     if channel_mult == "":
-        if image_size == 512:
-            channel_mult = (0.5, 1, 1, 2, 2, 4, 4)
-        elif image_size == 256:
-            channel_mult = (1, 1, 2, 2, 4, 4)
-        elif image_size == 128:
-            channel_mult = (1, 1, 2, 3, 4)
-        elif image_size == 64:
-            channel_mult = (1, 2, 3, 4)
+        if isinstance(image_size, tuple):
+            height, width = image_size
+            # 取较大的尺寸计算层数
+            max_size = max(height, width)
+            num_levels = int(math.log2(max_size))
+            # 根据层数动态设置channel_mult
+            if num_levels <= 5:  # 32x32或更小
+                channel_mult = (1, 2, 2, 2)
+            elif num_levels == 6:  # 64x64
+                channel_mult = (1, 2, 3, 4)
+            elif num_levels == 7:  # 128x128
+                channel_mult = (1, 1, 2, 3, 4)
+            elif num_levels == 8:  # 256x256
+                channel_mult = (1, 1, 2, 2, 4, 4)
+            else:  # 更大的尺寸
+                channel_mult = (0.5, 1, 2, 2, 4, 4, 4)
         else:
-            raise ValueError(f"unsupported image size: {image_size}")
+            # 保持向后兼容性，支持单个数字的image_size
+            if image_size == 512:
+                channel_mult = (0.5, 1, 1, 2, 2, 4, 4)
+            elif image_size == 256:
+                channel_mult = (1, 1, 2, 2, 4, 4)
+            elif image_size == 128:
+                channel_mult = (1, 1, 2, 3, 4)
+            elif image_size == 64:
+                channel_mult = (1, 2, 3, 4)
+            else:
+                raise ValueError(f"unsupported image size: {image_size}")
     else:
         channel_mult = tuple(int(ch_mult) for ch_mult in channel_mult.split(","))
 

@@ -1,0 +1,89 @@
+import argparse
+import os
+
+import torch
+import torch.nn as nn
+from guided_diffusion import dist_util, logger
+from guided_diffusion.script_util import (
+    model_and_diffusion_defaults,
+    create_model_and_diffusion,
+    args_to_dict,
+    add_dict_to_argparser,
+)
+from guided_diffusion.train_util import TrainLoop
+from guided_diffusion.dataset import ChannelDataset
+
+def main():
+    args = create_argparser().parse_args()
+
+    dist_util.setup_dist()
+    logger.configure()
+
+    # 处理图像尺寸
+    if args.image_height is not None and args.image_width is not None:
+        image_size = (int(args.image_height), int(args.image_width))
+    else:
+        image_size = int(args.image_size) if args.image_size is not None else None
+
+    logger.log("creating model and diffusion...")
+    model, diffusion = create_model_and_diffusion(
+        **args_to_dict(args, model_and_diffusion_defaults().keys())
+    )
+    model.to(dist_util.dev())
+    schedule_sampler = diffusion.create_schedule_sampler()
+
+    logger.log("creating data loader...")
+    dataset = ChannelDataset(args.data_dir, image_size=image_size)  # 传入处理后的图像尺寸
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+    )
+
+    logger.log("training...")
+    TrainLoop(
+        model=model,
+        diffusion=diffusion,
+        data=dataloader,
+        batch_size=args.batch_size,
+        microbatch=args.microbatch,
+        lr=args.lr,
+        ema_rate=args.ema_rate,
+        log_interval=args.log_interval,
+        save_interval=args.save_interval,
+        resume_checkpoint=args.resume_checkpoint,
+        use_fp16=args.use_fp16,
+        fp16_scale_growth=args.fp16_scale_growth,
+        schedule_sampler=schedule_sampler,
+        weight_decay=args.weight_decay,
+        lr_anneal_steps=args.lr_anneal_steps,
+    ).run_loop()
+
+def create_argparser():
+    defaults = dict(
+        data_dir="",
+        schedule_sampler="uniform",
+        lr=1e-4,
+        weight_decay=0.0,
+        lr_anneal_steps=0,
+        batch_size=32,
+        microbatch=-1,
+        ema_rate="0.9999",
+        log_interval=10,
+        save_interval=10000,
+        resume_checkpoint="",
+        use_fp16=False,
+        fp16_scale_growth=1e-3,
+        num_workers=4,
+        image_size=64,  # 默认图像大小
+        image_height=None,  # 新增：图像高度
+        image_width=None,  # 新增：图像宽度
+    )
+    defaults.update(model_and_diffusion_defaults())
+    parser = argparse.ArgumentParser()
+    add_dict_to_argparser(parser, defaults)
+    return parser
+
+if __name__ == "__main__":
+    main() 
