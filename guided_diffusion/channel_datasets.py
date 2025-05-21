@@ -4,6 +4,77 @@ import torch
 from torch.utils import data
 import hdf5storage
 
+def load_data(
+    *, data_dir, batch_size, image_size=None, pilot_length=1, snr_db=20.0,
+    quantize_y=True, n_bits=4, deterministic=False, train=True
+):
+    """
+    Create a generator over (H_tensor, kwargs) batches using ChannelDataset.
+
+    H_tensor: shape [B, 2, Tx, Rx]
+    kwargs: dict containing:
+        - "y": [B, 2, Tx, L] (real y)
+        - "y_quant": [B, 2, Tx, L] (quantized y)
+        - "p": [B, 2, Rx, L] (pilot)
+        - "h_max": [B]
+        - "scale_y": [B]
+    """
+    if not data_dir:
+        raise ValueError("unspecified data directory")
+
+    # 只取第一份文件（目前数据集中假设所有样本在一个大文件中）
+    file_path = data_dir
+
+    dataset = ChannelDataset(
+        data_path=file_path,
+        image_size=image_size,
+        pilot_length=pilot_length,
+        snr_db=snr_db,
+        quantize_y=quantize_y,
+        n_bits=n_bits,
+        normalize=True,
+        subcarrier_index=0,
+        seed=42
+    )
+
+    # 如果指定了image_size，检查数据尺寸是否匹配
+    if image_size is not None:
+        if isinstance(image_size, tuple):
+            # 确保转换为整数
+            height = int(image_size[0])
+            width = int(image_size[1])
+            if height != dataset.tx or width != dataset.rx:
+                raise ValueError(f"Specified image size ({height}, {width}) does not match data dimensions ({dataset.tx}, {dataset.rx})")
+        else:
+            # 单个数字的情况
+            size = int(image_size)
+            if size != dataset.tx or size != dataset.rx:
+                raise ValueError(f"Specified image size {size} does not match data dimensions ({dataset.tx}, {dataset.rx})")
+
+    loader = data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=not deterministic,
+        num_workers=1,
+        drop_last=True
+    )
+
+    # 无限生成器
+    while True:
+        for batch in loader:
+            H = batch["H"]  # [B, 2, Tx, Rx]
+            if train==False:
+                kwargs = {
+                    "y": batch["y"],                     # [B, 2, Tx, L]
+                    "y_quant": batch["y_quant"],         # [B, 2, Tx, L]
+                    "p": batch["p"],                     # [B, 2, Rx, L]
+                    "h_max": batch["h_max"],         # [B]
+                    "scale_y": batch["scale_y"]          # [B]
+                }
+            else:
+                kwargs = {}
+            yield H, kwargs
+
 class ChannelDataset(data.Dataset):
     def __init__(self, data_path, image_size=None, pilot_length=1, snr_db=20.0,
                  quantize_y=True, n_bits=4, normalize=True,

@@ -1,9 +1,15 @@
+"""
+Train a diffusion model on images.
+"""
+
 import argparse
 import os
 
 import torch
 import torch.nn as nn
 from guided_diffusion import dist_util, logger
+from guided_diffusion.channel_datasets import load_data
+from guided_diffusion.resample import create_named_schedule_sampler
 from guided_diffusion.script_util import (
     model_and_diffusion_defaults,
     create_model_and_diffusion,
@@ -11,7 +17,7 @@ from guided_diffusion.script_util import (
     add_dict_to_argparser,
 )
 from guided_diffusion.train_util import TrainLoop
-from guided_diffusion.dataset import ChannelDataset
+
 
 def main():
     args = create_argparser().parse_args()
@@ -30,22 +36,20 @@ def main():
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
     model.to(dist_util.dev())
-    schedule_sampler = diffusion.create_schedule_sampler()
+    schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
     logger.log("creating data loader...")
-    dataset = ChannelDataset(args.data_dir, image_size=image_size)  # 传入处理后的图像尺寸
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
+    data = load_data(
+        data_dir=args.data_dir,
         batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
+        image_size=image_size,  # 传入处理后的图像尺寸
     )
 
     logger.log("training...")
     TrainLoop(
         model=model,
         diffusion=diffusion,
-        data=dataloader,
+        data=data,
         batch_size=args.batch_size,
         microbatch=args.microbatch,
         lr=args.lr,
@@ -59,6 +63,7 @@ def main():
         weight_decay=args.weight_decay,
         lr_anneal_steps=args.lr_anneal_steps,
     ).run_loop()
+
 
 def create_argparser():
     defaults = dict(
@@ -79,11 +84,13 @@ def create_argparser():
         image_size=64,  # 默认图像大小
         image_height=None,  # 新增：图像高度
         image_width=None,  # 新增：图像宽度
+        in_channels=2,  # 新增：输入通道数
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
     add_dict_to_argparser(parser, defaults)
     return parser
+
 
 if __name__ == "__main__":
     main() 

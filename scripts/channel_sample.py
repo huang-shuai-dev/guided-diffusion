@@ -3,6 +3,7 @@ import os
 
 import torch
 import torch.nn as nn
+import numpy as np
 from guided_diffusion import dist_util, logger
 from guided_diffusion.script_util import (
     model_and_diffusion_defaults,
@@ -18,6 +19,14 @@ def main():
     dist_util.setup_dist()
     logger.configure()
 
+    # 处理图像尺寸
+    if args.image_height is not None and args.image_width is not None:
+        image_height = int(args.image_height)
+        image_width = int(args.image_width)
+    else:
+        image_size = int(args.image_size) if args.image_size is not None else 64
+        image_height = image_width = image_size
+
     logger.log("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
@@ -30,22 +39,13 @@ def main():
         model.convert_to_fp16()
     model.eval()
 
-    logger.log("creating data loader...")
-    dataset = ChannelDataset(args.data_dir)
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-    )
-
     logger.log("sampling...")
     all_samples = []
     while len(all_samples) * args.batch_size < args.num_samples:
         model_kwargs = {}
         sample = diffusion.p_sample_loop(
             model,
-            (args.batch_size, args.in_channels, args.image_height, args.image_width),
+            (args.batch_size, args.in_channels, image_height, image_width),
             clip_denoised=args.clip_denoised,
             model_kwargs=model_kwargs,
         )
@@ -65,11 +65,14 @@ def main():
 def create_argparser():
     defaults = dict(
         clip_denoised=True,
-        num_samples=10000,
+        num_samples=160,
         batch_size=32,
         use_fp16=False,
         model_path="",
         num_workers=4,
+        image_height=None,
+        image_width=None,
+        in_channels=2,
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
