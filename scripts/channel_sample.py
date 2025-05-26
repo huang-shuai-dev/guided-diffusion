@@ -4,6 +4,7 @@ import os
 import torch
 import torch.nn as nn
 import numpy as np
+import torch.distributed as dist
 from guided_diffusion import dist_util, logger
 from guided_diffusion.script_util import (
     model_and_diffusion_defaults,
@@ -43,24 +44,42 @@ def main():
     all_samples = []
     while len(all_samples) * args.batch_size < args.num_samples:
         model_kwargs = {}
-        sample = diffusion.p_sample_loop(
+        sample_fn = (
+            diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
+        )
+        sample = sample_fn(
             model,
             (args.batch_size, args.in_channels, image_height, image_width),
             clip_denoised=args.clip_denoised,
             model_kwargs=model_kwargs,
         )
+        
+        # 打印采样形状和数值范围用于调试
+        logger.log(f"Sample shape before processing: {sample.shape}")
+        logger.log(f"Sample value range before processing: {sample.min().item():.3f} to {sample.max().item():.3f}")
+        
         sample = ((sample + 1) * 127.5).clamp(0, 255).to(torch.uint8)
         sample = sample.permute(0, 2, 3, 1)
         sample = sample.contiguous()
 
-        all_samples.extend([sample.cpu().numpy() for sample in sample])
+        # 添加分布式处理
+        gathered_samples = [torch.zeros_like(sample) for _ in range(dist.get_world_size())]
+        dist.all_gather(gathered_samples, sample)
+        all_samples.extend([sample.cpu().numpy() for sample in gathered_samples])
+        
+        logger.log(f"created {len(all_samples) * args.batch_size} samples")
 
     arr = np.concatenate(all_samples, axis=0)
     arr = arr[: args.num_samples]
-    shape_str = "x".join([str(x) for x in arr.shape])
-    out_path = os.path.join(logger.get_dir(), f"samples_{shape_str}.npz")
-    logger.log(f"saving to {out_path}")
-    np.savez(out_path, arr)
+    
+    if dist.get_rank() == 0:
+        shape_str = "x".join([str(x) for x in arr.shape])
+        out_path = os.path.join(logger.get_dir(), f"samples_{shape_str}.npz")
+        logger.log(f"saving to {out_path}")
+        np.savez(out_path, arr)
+
+    dist.barrier()
+    logger.log("sampling complete")
 
 def create_argparser():
     defaults = dict(
@@ -73,6 +92,7 @@ def create_argparser():
         image_height=None,
         image_width=None,
         in_channels=2,
+        use_ddim=False,  # 添加DDIM采样选项
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
